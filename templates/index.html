@@ -1038,27 +1038,52 @@ async function runBanker() {
   });
   const data = await resp.json();
 
+  // Banker's result is INDEPENDENT of the matrix-method deadlock detection.
+  // NEVER overwrite state.deadlocked here — that is owned by runDetection().
+  // Use a local variable for any Banker-specific highlighting.
+  const bankerUnsafe = data.unsafe_procs || [];
+
   const res = document.getElementById('banker-result');
   if (data.safe) {
-    const seq = data.sequence.map(i=>'P'+i).join(' → ');
+    const seq = data.sequence.map(i => 'P' + i).join(' → ');
     res.className = 'banker-result safe';
-    res.textContent = `✓ SAFE STATE — Sequence: ${seq}`;
+    res.innerHTML =
+      `✓ SAFE STATE` +
+      `<br><span style="font-size:11px;font-weight:400;opacity:.85">Safe execution sequence: <strong>${seq}</strong></span>` +
+      `<br><span style="font-size:10px;font-weight:400;opacity:.65;line-height:1.8">` +
+      `Each process runs to completion in this order, acquires its remaining resources, then releases everything so the next process can proceed. No deadlock can occur.` +
+      `</span>`;
   } else {
+    const stuck = bankerUnsafe.map(i => 'P' + i).join(', ');
     res.className = 'banker-result unsafe';
-    res.textContent = '⚠ UNSAFE STATE — No safe sequence exists';
+    res.textContent = `⚠ UNSAFE STATE — Cannot find a safe sequence. Processes that may deadlock: ${stuck}. Granting further requests risks deadlock.`;
   }
 
   const trace = document.getElementById('banker-trace');
   let html = '';
   data.trace.forEach(line => {
     const cls = line.includes('SAFE STATE') ? 'l-ok' :
-                line.includes('UNSAFE') ? 'l-err' :
-                line.includes('===') ? 'l-head' :
-                line.includes('can run') ? 'l-ok' : '';
+                line.includes('UNSAFE')     ? 'l-err' :
+                line.includes('===') || line.includes('---') ? 'l-head' :
+                line.includes('GRANT') || line.includes('completes') ? 'l-ok' : '';
     html += `<div class="${cls}">${escHtml(line)}</div>`;
   });
   trace.innerHTML = html;
-  sysLog(`Banker's: ${data.safe ? 'SAFE' : 'UNSAFE'} state.`, data.safe ? 'ok' : 'err');
+
+  // Only refresh the visual — do NOT touch state.deadlocked
+  updateStats();
+  drawRAG();
+  drawSimRAG();
+  // Rebuild tables without reading DOM (skipRead=true) — no state mutation
+  rebuildTables(true);
+
+  if (data.safe) {
+    sysLog("Banker's: SAFE state.", 'ok');
+    toast('System is SAFE', 'ok');
+  } else {
+    sysLog(`Banker's: UNSAFE. Processes at risk: ${bankerUnsafe.map(i=>'P'+i).join(', ')}`, 'err');
+    toast('Unsafe state detected!', 'err');
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1076,14 +1101,14 @@ function updateVictimSelect(deadlocked) {
 }
 
 async function recover(strategy) {
-  if (state.cycles.length === 0 && state.deadlocked.length === 0) {
-    recoverLog('No deadlock detected. Run detection first.', 'l-warn');
+  if (state.deadlocked.length === 0) {
+    recoverLog('No deadlock detected by matrix method. Run detection first.', 'l-warn');
     return;
   }
   const sel = document.getElementById('victim-select');
   let victim;
   if (sel.value === 'auto') {
-    victim = state.deadlocked.length > 0 ? state.deadlocked[0] : 0;
+    victim = state.deadlocked.length > 0 ? state.deadlocked[Math.floor(Math.random() * state.deadlocked.length)] : 0;
   } else {
     victim = parseInt(sel.value);
   }
@@ -1091,6 +1116,7 @@ async function recover(strategy) {
   const payload = {
     strategy, victim, n_res: state.n_res,
     alloc: JSON.parse(JSON.stringify(state.alloc)),
+    req:   JSON.parse(JSON.stringify(state.req)),
     avail: JSON.parse(JSON.stringify(state.avail))
   };
   const resp = await fetch('/api/recover', {
@@ -1099,14 +1125,15 @@ async function recover(strategy) {
   });
   const data = await resp.json();
 
-  // apply new state
+  // Apply full updated state — alloc, req AND avail must all be synced
   state.alloc = data.alloc;
+  state.req   = data.req;
   state.avail = data.avail;
 
   recoverLog(data.msg, 'l-ok');
   sysLog(`[Recovery] ${data.msg}`, 'ok');
 
-  rebuildTables();
+  rebuildTables(true); // skipRead — state.alloc was just set from server, don't re-read DOM
   await runDetection();
 
   const stateEl = document.getElementById('recover-state');
@@ -1114,7 +1141,7 @@ async function recover(strategy) {
     let html = '<div style="font-family:var(--mono);font-size:12px">';
     html += `<div style="color:var(--text2);margin-bottom:8px">Available after recovery: <span style="color:var(--success)">${data.avail.join(', ')}</span></div>`;
     html += `<div style="color:var(--text2)">Allocation matrix updated.</div>`;
-    if (state.cycles.length === 0 && state.deadlocked.length === 0) {
+    if (state.deadlocked.length === 0) {
       html += '<div style="color:var(--success);margin-top:12px;font-weight:600">✓ Deadlock fully resolved. System is SAFE.</div>';
       recoverLog('✓ Deadlock resolved. System is now SAFE.', 'l-ok');
     } else {
@@ -1138,32 +1165,99 @@ function recoverLog(msg, cls='') {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Recovery Recommendation Engine
+// ═══════════════════════════════════════════════════════
+function generateRecoveryRecommendation() {
+  const banner = document.getElementById('recovery-recommendation');
+  if (!banner) return;
+
+  if (state.deadlocked.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  // Pick the best victim: deadlocked process holding fewest total resources
+  // (minimises wasted work / cascading impact)
+  let bestVictim = state.deadlocked[0];
+  let minHeld = Infinity;
+  state.deadlocked.forEach(pid => {
+    const held = (state.alloc[pid] || []).reduce((s, v) => s + v, 0);
+    if (held < minHeld) { minHeld = held; bestVictim = pid; }
+  });
+
+  // Determine best strategy based on how many resources the victim holds
+  const heldByVictim = (state.alloc[bestVictim] || []).reduce((s, v) => s + v, 0);
+  const totalDeadlocked = state.deadlocked.length;
+
+  let strategy, reason;
+  if (heldByVictim === 0) {
+    // Victim holds nothing — safe to terminate outright (nothing to release, it's just waiting)
+    strategy = 'terminate';
+    reason = `P${bestVictim} holds no resources (it is only waiting), so terminating it immediately breaks the wait with zero resource loss.`;
+  } else if (totalDeadlocked >= 3) {
+    // Many processes stuck — preemption is faster, frees resources without full teardown
+    strategy = 'preempt';
+    reason = `${totalDeadlocked} processes are deadlocked. Preempting resources from P${bestVictim} (holds ${heldByVictim} unit(s)) is the least-disruptive option — it frees resources without fully destroying the process.`;
+  } else {
+    // Few processes — rollback is safest if work can be redone; else terminate
+    strategy = 'rollback';
+    reason = `P${bestVictim} holds ${heldByVictim} resource unit(s). Rolling back its state releases those resources and allows the remaining processes to proceed, while preserving the possibility of restarting P${bestVictim} later.`;
+  }
+
+  // Sync the victim dropdown to the recommendation
+  const sel = document.getElementById('victim-select');
+  if (sel) sel.value = String(bestVictim);
+
+  const strategyLabel = { terminate: '🗑 Terminate', preempt: '⚡ Preempt Resources', rollback: '↩ Rollback' }[strategy];
+  const allDL = state.deadlocked.map(i => 'P'+i).join(', ');
+
+  banner.style.display = 'block';
+  banner.innerHTML = `
+    <div style="color:var(--warn);font-weight:600;margin-bottom:6px">💡 Recommended Recovery Strategy</div>
+    <div style="color:var(--text)"><strong>Strategy:</strong> <span style="color:var(--warn)">${strategyLabel}</span> &nbsp;|&nbsp; <strong>Victim:</strong> <span style="color:var(--warn)">P${bestVictim}</span></div>
+    <div style="color:var(--text3);margin-top:4px"><strong>Why:</strong> ${reason}</div>
+    <div style="color:var(--text2);margin-top:4px"><strong>Deadlocked:</strong> ${allDL} &nbsp;(${totalDeadlocked} process${totalDeadlocked > 1 ? 'es' : ''})</div>
+    <div style="color:var(--text2);margin-top:2px;font-size:10px">Victim auto-selected as the deadlocked process holding the fewest resources (minimises disruption). You can override via the dropdown below.</div>`;
+}
+
+// ═══════════════════════════════════════════════════════
 //  Stats update
 // ═══════════════════════════════════════════════════════
 function updateStats() {
-  const hasDL = state.cycles.length > 0 || state.deadlocked.length > 0;
+  const hasDL = state.deadlocked.length > 0;
+  // DFS wait-for cycles are a visual aid only; system state is determined solely
+  // by the Resource Allocation Matrix Method (state.deadlocked).
+  const waitForCycleCount = state.cycles.length;
 
   setText('sv-proc', state.n_proc);
   setText('sv-res',  state.n_res);
-  setText('sv-cycles', state.cycles.length);
+  // Show wait-for cycle count but only alert if there are ALSO deadlocked processes
+  setText('sv-cycles', waitForCycleCount);
   setText('sv-state', hasDL ? 'UNSAFE' : 'SAFE');
 
-  setClass('sc-cycles', hasDL ? 'stat-card alert' : 'stat-card');
+  // The cycles stat card turns red only when the matrix method also confirms deadlock
+  setClass('sc-cycles', (waitForCycleCount > 0 && hasDL) ? 'stat-card alert' : 'stat-card');
   setClass('sc-state',  hasDL ? 'stat-card alert' : 'stat-card good');
 
   const badge  = document.getElementById('global-status');
   const badgeT = document.getElementById('status-text');
   if (badge && badgeT) {
     badge.className  = 'status-badge ' + (hasDL ? 'danger' : 'safe');
-    badgeT.textContent = hasDL ? `DEADLOCK — ${state.cycles.length} cycle(s)` : 'SAFE STATE';
+    badgeT.textContent = hasDL ? `DEADLOCK — ${state.deadlocked.length} process(es)` : 'SAFE STATE';
   }
 
   const ragBadge = document.getElementById('rag-badge');
-  if (ragBadge) ragBadge.textContent = hasDL ? `${state.cycles.length} cycle(s)` : 'No cycles';
+  if (ragBadge) {
+    if (hasDL) {
+      ragBadge.textContent = `${state.deadlocked.length} deadlocked`;
+    } else if (waitForCycleCount > 0) {
+      // Cycles in graph but matrix method says no deadlock (multi-instance resources)
+      ragBadge.textContent = `${waitForCycleCount} wait-for cycle(s) — SAFE`;
+    } else {
+      ragBadge.textContent = 'No cycles — SAFE';
+    }
+  }
 }
-
-
-
 
 // ═══════════════════════════════════════════════════════
 //  RAG Canvas
