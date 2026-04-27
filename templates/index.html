@@ -689,6 +689,7 @@ window.addEventListener('load', () => {
   loadPreset('circular3');
 });
 
+
 window.addEventListener('resize', () => { drawRAG(); drawSimRAG(); });
 
 // ═══════════════════════════════════════════════════════
@@ -1009,11 +1010,144 @@ function renderDFSTrace(lines) {
 }
 
 
+// ═══════════════════════════════════════════════════════
+//  Banker's
+// ═══════════════════════════════════════════════════════
+async function runBanker() {
+  readMaxNeeds();
+  const payload = {
+    n_proc: state.n_proc, n_res: state.n_res,
+    alloc: state.alloc, max_need: state.max_need, avail: state.avail
+  };
+  const resp = await fetch('/api/banker', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const data = await resp.json();
 
+  const res = document.getElementById('banker-result');
+  if (data.safe) {
+    const seq = data.sequence.map(i=>'P'+i).join(' → ');
+    res.className = 'banker-result safe';
+    res.textContent = `✓ SAFE STATE — Sequence: ${seq}`;
+  } else {
+    res.className = 'banker-result unsafe';
+    res.textContent = '⚠ UNSAFE STATE — No safe sequence exists';
+  }
 
+  const trace = document.getElementById('banker-trace');
+  let html = '';
+  data.trace.forEach(line => {
+    const cls = line.includes('SAFE STATE') ? 'l-ok' :
+                line.includes('UNSAFE') ? 'l-err' :
+                line.includes('===') ? 'l-head' :
+                line.includes('can run') ? 'l-ok' : '';
+    html += `<div class="${cls}">${escHtml(line)}</div>`;
+  });
+  trace.innerHTML = html;
+  sysLog(`Banker's: ${data.safe ? 'SAFE' : 'UNSAFE'} state.`, data.safe ? 'ok' : 'err');
+}
 
+// ═══════════════════════════════════════════════════════
+//  Recovery
+// ═══════════════════════════════════════════════════════
+function updateVictimSelect(deadlocked) {
+  const sel = document.getElementById('victim-select');
+  if (!sel) return;
+  let html = '<option value="auto">Auto-select victim</option>';
+  for (let i = 0; i < state.n_proc; i++) {
+    const isDL = deadlocked.includes(i);
+    html += `<option value="${i}">${isDL ? '⚠ ' : ''}P${i}${isDL ? ' (deadlocked)' : ''}</option>`;
+  }
+  sel.innerHTML = html;
+}
 
+async function recover(strategy) {
+  if (state.cycles.length === 0 && state.deadlocked.length === 0) {
+    recoverLog('No deadlock detected. Run detection first.', 'l-warn');
+    return;
+  }
+  const sel = document.getElementById('victim-select');
+  let victim;
+  if (sel.value === 'auto') {
+    victim = state.deadlocked.length > 0 ? state.deadlocked[0] : 0;
+  } else {
+    victim = parseInt(sel.value);
+  }
 
+  const payload = {
+    strategy, victim, n_res: state.n_res,
+    alloc: JSON.parse(JSON.stringify(state.alloc)),
+    avail: JSON.parse(JSON.stringify(state.avail))
+  };
+  const resp = await fetch('/api/recover', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const data = await resp.json();
+
+  // apply new state
+  state.alloc = data.alloc;
+  state.avail = data.avail;
+
+  recoverLog(data.msg, 'l-ok');
+  sysLog(`[Recovery] ${data.msg}`, 'ok');
+
+  rebuildTables();
+  await runDetection();
+
+  const stateEl = document.getElementById('recover-state');
+  if (stateEl) {
+    let html = '<div style="font-family:var(--mono);font-size:12px">';
+    html += `<div style="color:var(--text2);margin-bottom:8px">Available after recovery: <span style="color:var(--success)">${data.avail.join(', ')}</span></div>`;
+    html += `<div style="color:var(--text2)">Allocation matrix updated.</div>`;
+    if (state.cycles.length === 0 && state.deadlocked.length === 0) {
+      html += '<div style="color:var(--success);margin-top:12px;font-weight:600">✓ Deadlock fully resolved. System is SAFE.</div>';
+      recoverLog('✓ Deadlock resolved. System is now SAFE.', 'l-ok');
+    } else {
+      html += `<div style="color:var(--danger);margin-top:12px">⚠ ${state.deadlocked.length} process(es) still deadlocked. Run recovery again.</div>`;
+      recoverLog(`⚠ ${state.deadlocked.length} cycle(s) remain.`, 'l-err');
+    }
+    html += '</div>';
+    stateEl.innerHTML = html;
+  }
+}
+
+function recoverLog(msg, cls='') {
+  const el = document.getElementById('recover-log');
+  if (!el) return;
+  const ts = new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = `[${ts}] ${msg}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════
+//  Stats update
+// ═══════════════════════════════════════════════════════
+function updateStats() {
+  const hasDL = state.cycles.length > 0 || state.deadlocked.length > 0;
+
+  setText('sv-proc', state.n_proc);
+  setText('sv-res',  state.n_res);
+  setText('sv-cycles', state.cycles.length);
+  setText('sv-state', hasDL ? 'UNSAFE' : 'SAFE');
+
+  setClass('sc-cycles', hasDL ? 'stat-card alert' : 'stat-card');
+  setClass('sc-state',  hasDL ? 'stat-card alert' : 'stat-card good');
+
+  const badge  = document.getElementById('global-status');
+  const badgeT = document.getElementById('status-text');
+  if (badge && badgeT) {
+    badge.className  = 'status-badge ' + (hasDL ? 'danger' : 'safe');
+    badgeT.textContent = hasDL ? `DEADLOCK — ${state.cycles.length} cycle(s)` : 'SAFE STATE';
+  }
+
+  const ragBadge = document.getElementById('rag-badge');
+  if (ragBadge) ragBadge.textContent = hasDL ? `${state.cycles.length} cycle(s)` : 'No cycles';
+}
 // ═══════════════════════════════════════════════════════
 //  RAG Canvas
 // ═══════════════════════════════════════════════════════
@@ -1282,7 +1416,7 @@ function setClass(id, cls) {
 function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-//ANGshumoy code again
+
 </script>
 </body>
 </html>
