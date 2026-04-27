@@ -18,3 +18,631 @@
 </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════════
+let state = {
+  // Default: 3 processes, 3 resources — matches circular3 preset
+  n_proc: 3, n_res: 3,
+  alloc:    [[1,0,0],[0,1,0],[0,0,1]],
+  req:      [[0,1,0],[0,0,1],[1,0,0]],
+  avail:    [0,0,0],
+  max_need: [[2,1,1],[1,2,1],[1,1,2]],
+  cycles: [], deadlocked: []
+};
+
+// ═══════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  loadPreset('circular3');
+});
+
+window.addEventListener('resize', () => { drawRAG(); drawSimRAG(); });
+
+// ═══════════════════════════════════════════════════════
+//  Tab navigation
+// ═══════════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab-page').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    if (btn.textContent.toLowerCase().includes(name) ||
+        (name === 'dashboard' && btn.textContent.includes('Dashboard')) ||
+        (name === 'about' && btn.textContent.includes('About'))) {
+      btn.classList.add('active');
+    }
+  });
+  if (name === 'dashboard') setTimeout(drawRAG, 50);
+  if (name === 'simulate')  setTimeout(drawSimRAG, 50);
+  if (name === 'banker') buildBankerAvailRow();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Simulate-tab +/- dimension buttons
+// ═══════════════════════════════════════════════════════
+function adjustDim(type, delta) {
+  const slider = document.getElementById(type === 'proc' ? 'proc-slider' : 'res-slider');
+  const next   = Math.min(+slider.max, Math.max(+slider.min, +slider.value + delta));
+  slider.value = next;
+  onSliderChange();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Slider
+// ═══════════════════════════════════════════════════════
+function onSliderChange() {
+  const np = +document.getElementById('proc-slider').value;
+  const nr = +document.getElementById('res-slider').value;
+  document.getElementById('proc-val').textContent = np;
+  document.getElementById('res-val').textContent  = nr;
+  // Keep simulate-tab +/- counters in sync
+  const _spv = document.getElementById('sim-proc-val');
+  const _srv = document.getElementById('sim-res-val');
+  if (_spv) _spv.textContent = np;
+  if (_srv) _srv.textContent = nr;
+
+  // resize matrices
+  function resizeMat(mat, rows, cols) {
+    const out = [];
+    for (let i = 0; i < rows; i++) {
+      out.push([]);
+      for (let j = 0; j < cols; j++)
+        out[i].push((mat[i] && mat[i][j] !== undefined) ? mat[i][j] : 0);
+    }
+    return out;
+  }
+  state.n_proc    = np; state.n_res = nr;
+  state.alloc     = resizeMat(state.alloc,    np, nr);
+  state.req       = resizeMat(state.req,      np, nr);
+  state.max_need  = resizeMat(state.max_need, np, nr);
+  state.avail     = (state.avail.concat([1,1,1,1,1,1])).slice(0, nr);
+
+  rebuildTables();
+  buildBankerAvailRow();
+  updateVictimSelect([]);
+}
+
+// ═══════════════════════════════════════════════════════
+//  Presets
+// ═══════════════════════════════════════════════════════
+const PRESETS = {
+  circular3: {n_proc:3,n_res:3,alloc:[[1,0,0],[0,1,0],[0,0,1]],req:[[0,1,0],[0,0,1],[1,0,0]],avail:[0,0,0],max_need:[[2,1,1],[1,2,1],[1,1,2]]},
+  circular2: {n_proc:2,n_res:2,alloc:[[1,0],[0,1]],req:[[0,1],[1,0]],avail:[0,0],max_need:[[1,1],[1,1]]},
+  partial:   {n_proc:4,n_res:3,alloc:[[1,0,0],[0,1,0],[0,0,1],[0,0,0]],req:[[0,1,0],[0,0,1],[1,0,0],[0,0,1]],avail:[1,0,0],max_need:[[2,1,0],[1,2,1],[1,0,2],[1,1,2]]},
+  safe:      {n_proc:4,n_res:3,alloc:[[0,1,0],[2,0,0],[3,0,2],[2,1,1]],req:[[0,0,0],[2,0,2],[0,0,0],[1,0,0]],avail:[3,3,2],max_need:[[7,5,3],[3,2,2],[9,0,2],[2,2,2]]}
+};
+
+function loadPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  Object.assign(state, JSON.parse(JSON.stringify(p)));
+  document.getElementById('proc-slider').value = state.n_proc;
+  document.getElementById('res-slider').value  = state.n_res;
+  document.getElementById('proc-val').textContent = state.n_proc;
+  document.getElementById('res-val').textContent  = state.n_res;
+  rebuildTables();
+  buildBankerAvailRow();
+  runDetection();
+  sysLog(`Loaded preset: ${name}`, name === 'safe' ? 'ok' : 'warn');
+}
+
+// ═══════════════════════════════════════════════════════
+//  Randomize
+// ═══════════════════════════════════════════════════════
+async function randomize() {
+  const resp = await fetch('/api/randomize', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({n_proc: state.n_proc, n_res: state.n_res})
+  });
+  const data = await resp.json();
+  Object.assign(state, data);
+  rebuildTables();
+  buildBankerAvailRow();
+  runDetection();
+  sysLog('Randomized matrices.', 'info');
+}
+
+// ═══════════════════════════════════════════════════════
+//  Read matrices from DOM inputs (Simulate tab)
+// ═══════════════════════════════════════════════════════
+function readMatrices() {
+  for (let i = 0; i < state.n_proc; i++) {
+    for (let j = 0; j < state.n_res; j++) {
+      const a = document.getElementById(`alloc-${i}-${j}`);
+      const r = document.getElementById(`req-${i}-${j}`);
+      if (a) state.alloc[i][j] = parseInt(a.value) || 0;
+      if (r) state.req[i][j]   = parseInt(r.value) || 0;
+    }
+  }
+}
+
+function readMaxNeeds() {
+  for (let i = 0; i < state.n_proc; i++) {
+    for (let j = 0; j < state.n_res; j++) {
+      const el = document.getElementById(`max-${i}-${j}`);
+      if (el) state.max_need[i][j] = parseInt(el.value) || 0;
+    }
+  }
+  for (let j = 0; j < state.n_res; j++) {
+    const el = document.getElementById(`bavail-${j}`);
+    if (el) state.avail[j] = parseInt(el.value) || 0;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Build matrix HTML tables
+// ═══════════════════════════════════════════════════════
+function buildMatrixTable(containerId, matKey, prefix, deadlocked=[]) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const mat = state[matKey];
+  let html = '<table class="mx"><thead><tr><th></th>';
+  for (let j = 0; j < state.n_res; j++) html += `<th>R${j}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let i = 0; i < state.n_proc; i++) {
+    const dl = deadlocked.includes(i);
+    html += `<tr class="${dl ? 'dl-row' : ''}"><td class="proc">${dl ? '⚠ ' : ''}P${i}</td>`;
+    for (let j = 0; j < state.n_res; j++) {
+      html += `<td><input type="number" min="0" max="9" id="${prefix}-${i}-${j}" value="${mat[i][j]}" oninput="onMatrixInput('${matKey}',${i},${j},this.value)"/></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function buildMaxTable(deadlocked=[]) {
+  const container = document.getElementById('max-table');
+  if (!container) return;
+  let html = '<table class="mx"><thead><tr><th></th>';
+  for (let j = 0; j < state.n_res; j++) html += `<th>R${j}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let i = 0; i < state.n_proc; i++) {
+    html += `<tr><td class="proc">P${i}</td>`;
+    for (let j = 0; j < state.n_res; j++) {
+      html += `<td><input type="number" min="0" max="9" id="max-${i}-${j}" value="${state.max_need[i][j]}"/></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function rebuildTables() {
+  // Flush any in-progress DOM edits into state BEFORE re-rendering.
+  // This prevents the req table from resetting to stale state.req values
+  // whenever a rebuild is triggered (slider, preset, randomize, etc.)
+  readMatrices();
+  buildMatrixTable('alloc-table', 'alloc', 'alloc', state.deadlocked || []);
+  buildMatrixTable('req-table',   'req',   'req',   state.deadlocked || []);
+  buildMaxTable(state.deadlocked || []);
+  // Keep the simulate-tab RAG in sync with any structural change
+  drawSimRAG();
+}
+
+function onMatrixInput(matKey, i, j, val) {
+  // 1. Write the changed cell into state
+  state[matKey][i][j] = parseInt(val) || 0;
+  // 2. Redraw both RAG canvases immediately (live feedback)
+  drawRAG();
+  drawSimRAG();
+  // 3. If the allocation matrix changed, flash the req badge to signal sync
+  if (matKey === 'alloc') {
+    const badge = document.getElementById('req-sync-badge');
+    if (badge) {
+      badge.textContent = '↺ Updated';
+      badge.style.color = 'var(--warn)';
+      clearTimeout(badge._t);
+      badge._t = setTimeout(() => {
+        badge.textContent = 'Synced with allocation';
+        badge.style.color = '';
+      }, 800);
+    }
+  }
+}
+
+function buildBankerAvailRow() {
+  const row = document.getElementById('banker-avail-row');
+  if (!row) return;
+  let html = '<label>Available:</label>';
+  for (let j = 0; j < state.n_res; j++) {
+    html += `<span style="font-family:var(--mono);font-size:11px;color:var(--text2)">R${j}:</span>
+             <input id="bavail-${j}" type="number" min="0" max="20" value="${state.avail[j] || 0}"/>`;
+  }
+  row.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════
+//  Apply & detect (from simulate tab)
+// ═══════════════════════════════════════════════════════
+function applyAndDetect() {
+  readMatrices();
+  rebuildTables();
+  runDetection();
+  switchTab('detect');
+}
+
+// ═══════════════════════════════════════════════════════
+//  Run Detection
+// ═══════════════════════════════════════════════════════
+async function runDetection() {
+  readMatrices();
+  const el = document.getElementById('detect-running');
+  if (el) el.innerHTML = '<span class="spin"></span>';
+
+  const payload = {
+    n_proc: state.n_proc, n_res: state.n_res,
+    alloc: state.alloc, req: state.req, avail: state.avail
+  };
+
+  try {
+    const resp = await fetch('/api/detect', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    state.cycles     = data.cycles     || [];
+    state.deadlocked = data.deadlocked || [];
+
+    updateStats();
+    drawRAG();
+    drawSimRAG();
+    renderDetectResults(data);
+    renderDFSTrace([...data.dfs_trace, ...data.mat_trace]);
+    updateVictimSelect(state.deadlocked);
+    rebuildTables(); // highlight deadlocked rows
+
+    const hasDeadlock = state.cycles.length > 0 || state.deadlocked.length > 0;
+    if (hasDeadlock) {
+      sysLog(`DEADLOCK DETECTED: ${state.cycles.length} cycle(s). Processes: ${state.deadlocked.map(i=>'P'+i).join(', ')}`, 'err');
+      toast('Deadlock detected!', 'err');
+    } else {
+      sysLog('Detection complete. System state: SAFE.', 'ok');
+      toast('System is SAFE', 'ok');
+    }
+
+    if (el) el.innerHTML = '';
+  } catch(e) {
+    if (el) el.innerHTML = '';
+    sysLog('API error: ' + e.message, 'err');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Render Detection Results
+// ═══════════════════════════════════════════════════════
+function renderDetectResults(data) {
+  const el = document.getElementById('detect-results');
+  if (!el) return;
+  let html = '';
+
+  html += '<div class="detect-result-block">';
+  html += '<h4>DFS Cycle Detection</h4>';
+  if (data.cycles.length > 0) {
+    html += `<div class="err">⚠ ${data.cycles.length} Deadlock cycle(s) found</div>`;
+    data.cycles.forEach((cyc, idx) => {
+      const path = cyc.join(' → ') + ' → ' + cyc[0];
+      html += `<div class="cycle-path">Cycle ${idx+1}: ${path}</div>`;
+    });
+  } else {
+    html += '<div class="ok">✓ No cycles detected. System is SAFE.</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="detect-result-block">';
+  html += '<h4>Resource Allocation Matrix Method</h4>';
+  if (data.deadlocked.length > 0) {
+    html += `<div class="err">⚠ Deadlocked processes: ${data.deadlocked.map(i=>'P'+i).join(', ')}</div>`;
+  } else {
+    html += '<div class="ok">✓ All processes can complete. No deadlock.</div>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+function renderDFSTrace(lines) {
+  const el = document.getElementById('dfs-trace');
+  if (!el) return;
+  let html = '';
+  lines.forEach(line => {
+    const cls = (line.includes('CYCLE') || line.includes('DEADLOCK')) ? 'l-err' :
+                line.includes('===') ? 'l-head' :
+                line.includes('can complete') ? 'l-ok' : '';
+    html += `<div class="${cls}">${escHtml(line)}</div>`;
+  });
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════
+//  RAG Canvas
+// ═══════════════════════════════════════════════════════
+function drawRAG() {
+  const canvas = document.getElementById('rag-canvas');
+  if (!canvas) return;
+  const parent = canvas.parentElement;
+  canvas.width  = parent.clientWidth  - 20;
+  canvas.height = parent.clientHeight - 20;
+  const W = canvas.width, H = canvas.height;
+  if (W < 10 || H < 10) return;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#161924';
+  ctx.fillRect(0, 0, W, H);
+
+  const np = state.n_proc, nr = state.n_res;
+  const PR = 22, RR = 18;
+  const deadlocked = new Set(state.deadlocked || []);
+
+  // Layout: processes on left, resources on right
+  const procPos = [], resPos = [];
+  const padding = 60;
+  for (let i = 0; i < np; i++) {
+    procPos.push({ x: W * 0.28, y: padding + (H - 2*padding) * (i / Math.max(np-1, 1)) });
+  }
+  for (let j = 0; j < nr; j++) {
+    resPos.push({ x: W * 0.72, y: padding + (H - 2*padding) * (j / Math.max(nr-1, 1)) });
+  }
+
+  const PROC_COLORS = ['#4f8fff','#3dffa0','#ff6b6b','#ffd93d','#c77dff','#ff9f43','#48dbfb','#ff6b9d'];
+  const RES_COLORS  = ['#4f8fff','#3dffa0','#ffd93d','#ff6b6b','#c77dff','#ff9f43'];
+
+  // Draw edges
+  for (let i = 0; i < np; i++) {
+    for (let j = 0; j < nr; j++) {
+      const p = procPos[i], r = resPos[j];
+      const inDL = deadlocked.has(i);
+      // Allocation edge: R -> P (green/red)
+      if (state.alloc[i] && state.alloc[i][j] > 0) {
+        drawArrow(ctx, r.x - RR, r.y, p.x + PR, p.y, inDL ? '#ff4d6d' : '#3dffa0', 0.8);
+        // label amount
+        const mx = (r.x - RR + p.x + PR) / 2, my = (r.y + p.y) / 2;
+        ctx.save();
+        ctx.font = '10px JetBrains Mono';
+        ctx.fillStyle = inDL ? '#ff4d6d' : '#3dffa0';
+        ctx.fillText(state.alloc[i][j], mx + 4, my - 4);
+        ctx.restore();
+      }
+      // Request edge: P -> R (blue/red)
+      if (state.req[i] && state.req[i][j] > 0) {
+        drawArrow(ctx, p.x - PR, p.y, r.x + RR, r.y, inDL ? '#ff4d6d88' : '#4f8fff', 0.75);
+      }
+    }
+  }
+
+  // Draw resource nodes (rectangles)
+  for (let j = 0; j < nr; j++) {
+    const { x, y } = resPos[j];
+    const color = RES_COLORS[j % RES_COLORS.length];
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.fillStyle = '#1e2231';
+    roundRect(ctx, x - RR, y - RR, RR*2, RR*2, 5);
+    ctx.fill(); ctx.stroke();
+    ctx.font = 'bold 11px JetBrains Mono';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.fillText(`R${j}`, x, y - 3);
+    ctx.font = '9px JetBrains Mono';
+    ctx.fillStyle = '#6e7a96';
+    ctx.fillText(`a:${state.avail[j] || 0}`, x, y + 11);
+    ctx.restore();
+  }
+
+  // Draw process nodes (circles)
+  for (let i = 0; i < np; i++) {
+    const { x, y } = procPos[i];
+    const inDL = deadlocked.has(i);
+    const color = inDL ? '#ff4d6d' : PROC_COLORS[i % PROC_COLORS.length];
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, PR, 0, Math.PI * 2);
+    ctx.fillStyle = inDL ? 'rgba(255,77,109,.15)' : '#1a2030';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.fill(); ctx.stroke();
+    if (inDL) {
+      ctx.shadowColor = '#ff4d6d';
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    ctx.font = 'bold 11px JetBrains Mono';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`P${i}`, x, y);
+    ctx.restore();
+  }
+
+  // Legend
+  ctx.save();
+  ctx.font = '10px JetBrains Mono';
+  const legends = [
+    { txt: '● Process',    col: '#6e7a96' },
+    { txt: '→ Allocated',  col: '#3dffa0' },
+    { txt: '→ Requesting', col: '#4f8fff' },
+    { txt: '■ Deadlocked', col: '#ff4d6d' },
+  ];
+  let lx = 10;
+  legends.forEach(({ txt, col }) => {
+    ctx.fillStyle = col;
+    ctx.fillText(txt, lx, H - 10);
+    lx += ctx.measureText(txt).width + 16;
+  });
+  ctx.restore();
+}
+
+function drawArrow(ctx, x1, y1, x2, y2, color, alpha=1) {
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const len   = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
+  const ax = x2 - 8 * Math.cos(angle), ay = y2 - 8 * Math.sin(angle);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.fillStyle   = color;
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(ax, ay); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - 10*Math.cos(angle - 0.4), y2 - 10*Math.sin(angle - 0.4));
+  ctx.lineTo(x2 - 10*Math.cos(angle + 0.4), y2 - 10*Math.sin(angle + 0.4));
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);    ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);      ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Simulate-tab Live RAG (targets #sim-rag-canvas)
+//  Uses getBoundingClientRect so it works even when the
+//  dashboard tab is hidden (clientWidth would be 0 there).
+// ═══════════════════════════════════════════════════════
+function drawSimRAG() {
+  const canvas = document.getElementById('sim-rag-canvas');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const W = Math.floor(rect.width  - 16);
+  const H = Math.floor(rect.height - 16);
+  if (W < 20 || H < 20) return;
+  canvas.width  = W;
+  canvas.height = H;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#161924';
+  ctx.fillRect(0, 0, W, H);
+
+  const np = state.n_proc, nr = state.n_res;
+  const PR = 20, RR = 16, pad = 48;
+  const deadlocked = new Set(state.deadlocked || []);
+
+  const procPos = [], resPos = [];
+  for (let i = 0; i < np; i++)
+    procPos.push({ x: W*0.26, y: pad + (H-2*pad)*(i/Math.max(np-1,1)) });
+  for (let j = 0; j < nr; j++)
+    resPos.push({ x: W*0.74, y: pad + (H-2*pad)*(j/Math.max(nr-1,1)) });
+
+  const PC = ['#4f8fff','#3dffa0','#ff6b6b','#ffd93d','#c77dff','#ff9f43','#48dbfb','#ff6b9d'];
+  const RC = ['#4f8fff','#3dffa0','#ffd93d','#ff6b6b','#c77dff','#ff9f43'];
+
+  // Edges
+  for (let i = 0; i < np; i++) {
+    for (let j = 0; j < nr; j++) {
+      const p = procPos[i], r = resPos[j], inDL = deadlocked.has(i);
+      if (state.alloc[i]?.[j] > 0) {
+        drawArrow(ctx, r.x-RR, r.y, p.x+PR, p.y, inDL ? '#ff4d6d' : '#3dffa0', 0.82);
+        const mx=(r.x-RR+p.x+PR)/2, my=(r.y+p.y)/2;
+        ctx.save(); ctx.font='9px JetBrains Mono';
+        ctx.fillStyle = inDL?'#ff4d6d':'#3dffa0';
+        ctx.fillText(state.alloc[i][j], mx+3, my-3); ctx.restore();
+      }
+      if (state.req[i]?.[j] > 0)
+        drawArrow(ctx, p.x-PR, p.y, r.x+RR, r.y, inDL?'#ff4d6d88':'#4f8fff', 0.76);
+    }
+  }
+
+  // Resource rectangles
+  for (let j = 0; j < nr; j++) {
+    const {x,y} = resPos[j], c = RC[j%RC.length];
+    ctx.save();
+    ctx.strokeStyle=c; ctx.lineWidth=2; ctx.fillStyle='#1e2231';
+    roundRect(ctx,x-RR,y-RR,RR*2,RR*2,4); ctx.fill(); ctx.stroke();
+    ctx.font='bold 10px JetBrains Mono'; ctx.fillStyle=c; ctx.textAlign='center';
+    ctx.fillText('R'+j, x, y-2);
+    ctx.font='8px JetBrains Mono'; ctx.fillStyle='#6e7a96';
+    ctx.fillText('a:'+(state.avail[j]||0), x, y+10); ctx.restore();
+  }
+
+  // Process circles
+  for (let i = 0; i < np; i++) {
+    const {x,y} = procPos[i], inDL=deadlocked.has(i), c=inDL?'#ff4d6d':PC[i%PC.length];
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x,y,PR,0,Math.PI*2);
+    ctx.fillStyle=inDL?'rgba(255,77,109,.15)':'#1a2030';
+    ctx.strokeStyle=c; ctx.lineWidth=2; ctx.fill(); ctx.stroke();
+    if (inDL) { ctx.shadowColor='#ff4d6d'; ctx.shadowBlur=10; ctx.stroke(); }
+    ctx.shadowBlur=0;
+    ctx.font='bold 10px JetBrains Mono'; ctx.fillStyle=c;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('P'+i, x, y); ctx.restore();
+  }
+
+  // Legend
+  ctx.save(); ctx.font='9px JetBrains Mono';
+  [['→ Alloc','#3dffa0'],['→ Req','#4f8fff'],['■ DL','#ff4d6d']].reduce((lx,[t,c])=>{
+    ctx.fillStyle=c; ctx.fillText(t,lx,H-7); return lx+ctx.measureText(t).width+12;
+  }, 8);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Utils
+// ═══════════════════════════════════════════════════════
+function sysLog(msg, type='info') {
+  const el = document.getElementById('sys-log');
+  if (!el) return;
+  const ts  = new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  div.className = 'l-' + type;
+  div.textContent = `[${ts}] ${msg}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function toast(msg, type='') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = 'toast show ' + type;
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function setClass(id, cls) {
+  const el = document.getElementById(id);
+  if (el) el.className = cls;
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+//ANGshumoy code again
+</script>
+</body>
+</html>
