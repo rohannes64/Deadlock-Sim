@@ -679,7 +679,6 @@ window.addEventListener('load', () => {
   loadPreset('circular3');
 });
 
-
 window.addEventListener('resize', () => { drawRAG(); drawSimRAG(); });
 
 // ═══════════════════════════════════════════════════════
@@ -760,30 +759,49 @@ function loadPreset(name) {
   const p = PRESETS[name];
   if (!p) return;
   Object.assign(state, JSON.parse(JSON.stringify(p)));
+  state.cycles = []; state.deadlocked = [];
   document.getElementById('proc-slider').value = state.n_proc;
   document.getElementById('res-slider').value  = state.n_res;
   document.getElementById('proc-val').textContent = state.n_proc;
   document.getElementById('res-val').textContent  = state.n_res;
-  rebuildTables();
+  rebuildTables(true); // skipRead — preset values must not be overwritten by DOM
   buildBankerAvailRow();
   runDetection();
   sysLog(`Loaded preset: ${name}`, name === 'safe' ? 'ok' : 'warn');
 }
 
 // ═══════════════════════════════════════════════════════
-//  Randomize
+//  Randomize (fully client-side)
 // ═══════════════════════════════════════════════════════
-async function randomize() {
-  const resp = await fetch('/api/randomize', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({n_proc: state.n_proc, n_res: state.n_res})
+function randomize() {
+  const np = state.n_proc, nr = state.n_res;
+  const alloc = Array.from({length: np}, () =>
+    Array.from({length: nr}, () => Math.floor(Math.random() * 3)));
+  const max_need = alloc.map(row => {
+    const out = row.map(v => v + Math.floor(Math.random() * 3));
+    const bump = Math.floor(Math.random() * nr);
+    if (out[bump] === row[bump]) out[bump]++;  // guarantee at least one non-zero need
+    return out;
   });
-  const data = await resp.json();
-  Object.assign(state, data);
-  rebuildTables();
+  const req = alloc.map((row, i) =>
+    row.map((v, j) => {
+      const need = max_need[i][j] - v;
+      return need > 0 ? Math.floor(Math.random() * (need + 1)) : 0;
+    }));
+  const avail = Array.from({length: nr}, () => Math.floor(Math.random() * 4));
+
+  state.alloc    = alloc;
+  state.req      = req;
+  state.max_need = max_need;
+  state.avail    = avail;
+  state.cycles   = [];
+  state.deadlocked = [];
+
+  rebuildTables(true); // skipRead — new values must not be overwritten by DOM
   buildBankerAvailRow();
   runDetection();
   sysLog('Randomized matrices.', 'info');
+  toast('Matrices randomized!');
 }
 
 // ═══════════════════════════════════════════════════════
@@ -852,15 +870,13 @@ function buildMaxTable(deadlocked=[]) {
   container.innerHTML = html;
 }
 
-function rebuildTables() {
-  // Flush any in-progress DOM edits into state BEFORE re-rendering.
-  // This prevents the req table from resetting to stale state.req values
-  // whenever a rebuild is triggered (slider, preset, randomize, etc.)
-  readMatrices();
+function rebuildTables(skipRead = false) {
+  // Only flush DOM → state if inputs actually exist AND caller hasn't suppressed it.
+  // Suppressing prevents preset/randomize values being overwritten by stale DOM inputs.
+  if (!skipRead && document.getElementById('alloc-0-0')) readMatrices();
   buildMatrixTable('alloc-table', 'alloc', 'alloc', state.deadlocked || []);
   buildMatrixTable('req-table',   'req',   'req',   state.deadlocked || []);
   buildMaxTable(state.deadlocked || []);
-  // Keep the simulate-tab RAG in sync with any structural change
   drawSimRAG();
 }
 
@@ -900,8 +916,7 @@ function buildBankerAvailRow() {
 //  Apply & detect (from simulate tab)
 // ═══════════════════════════════════════════════════════
 function applyAndDetect() {
-  readMatrices();
-  rebuildTables();
+  readMatrices(); // explicitly flush DOM → state first
   runDetection();
   switchTab('detect');
 }
@@ -910,7 +925,8 @@ function applyAndDetect() {
 //  Run Detection
 // ═══════════════════════════════════════════════════════
 async function runDetection() {
-  readMatrices();
+  // Only read from DOM if inputs exist (i.e. tables have been rendered)
+  if (document.getElementById('alloc-0-0')) readMatrices();
   const el = document.getElementById('detect-running');
   if (el) el.innerHTML = '<span class="spin"></span>';
 
@@ -934,11 +950,14 @@ async function runDetection() {
     renderDetectResults(data);
     renderDFSTrace([...data.dfs_trace, ...data.mat_trace]);
     updateVictimSelect(state.deadlocked);
-    rebuildTables(); // highlight deadlocked rows
+    generateRecoveryRecommendation();
+    // Rebuild tables to highlight deadlocked rows — skipRead=true so detection
+    // results are NOT overwritten by whatever is currently in the DOM inputs
+    rebuildTables(true);
 
-    const hasDeadlock = state.cycles.length > 0 || state.deadlocked.length > 0;
+    const hasDeadlock = state.deadlocked.length > 0;
     if (hasDeadlock) {
-      sysLog(`DEADLOCK DETECTED: ${state.cycles.length} cycle(s). Processes: ${state.deadlocked.map(i=>'P'+i).join(', ')}`, 'err');
+      sysLog(`DEADLOCK DETECTED: ${state.deadlocked.length} deadlocked process(es).`, 'err');
       toast('Deadlock detected!', 'err');
     } else {
       sysLog('Detection complete. System state: SAFE.', 'ok');
@@ -961,24 +980,31 @@ function renderDetectResults(data) {
   let html = '';
 
   html += '<div class="detect-result-block">';
-  html += '<h4>DFS Cycle Detection</h4>';
+  html += '<h4>DFS Cycle Detection (Wait-For Graph — Visual Aid)</h4>';
   if (data.cycles.length > 0) {
-    html += `<div class="err">⚠ ${data.cycles.length} Deadlock cycle(s) found</div>`;
+    html += `<div class="err">⚠ ${data.cycles.length} wait-for cycle(s) found in the RAG</div>`;
     data.cycles.forEach((cyc, idx) => {
       const path = cyc.join(' → ') + ' → ' + cyc[0];
       html += `<div class="cycle-path">Cycle ${idx+1}: ${path}</div>`;
     });
+    if (data.deadlocked.length === 0) {
+      html += `<div style="color:var(--warn);margin-top:6px;font-size:11px">ℹ️ Note: In multi-instance resource systems, a cycle in the RAG is necessary but NOT sufficient for deadlock. The Matrix Method below is authoritative.</div>`;
+    }
   } else {
-    html += '<div class="ok">✓ No cycles detected. System is SAFE.</div>';
+    html += '<div class="ok">✓ No cycles in wait-for graph.</div>';
   }
   html += '</div>';
 
   html += '<div class="detect-result-block">';
-  html += '<h4>Resource Allocation Matrix Method</h4>';
+  html += '<h4>Resource Allocation Matrix Method (Authoritative)</h4>';
   if (data.deadlocked.length > 0) {
     html += `<div class="err">⚠ Deadlocked processes: ${data.deadlocked.map(i=>'P'+i).join(', ')}</div>`;
+    html += `<div style="color:var(--text3);margin-top:6px;font-size:11px">These processes cannot complete even after all other processes release their resources.</div>`;
   } else {
-    html += '<div class="ok">✓ All processes can complete. No deadlock.</div>';
+    html += '<div class="ok">✓ All processes can complete. No deadlock confirmed.</div>';
+    if (data.cycles.length > 0) {
+      html += `<div style="color:var(--success);margin-top:4px;font-size:11px">✓ Despite RAG cycles (multi-instance resources), the matrix method confirms the system is SAFE.</div>`;
+    }
   }
   html += '</div>';
 
@@ -1000,9 +1026,6 @@ function renderDFSTrace(lines) {
 }
 
 
-// ═══════════════════════════════════════════════════════
-//  Banker's
-// ═══════════════════════════════════════════════════════
 async function runBanker() {
   readMaxNeeds();
   const payload = {
@@ -1138,6 +1161,10 @@ function updateStats() {
   const ragBadge = document.getElementById('rag-badge');
   if (ragBadge) ragBadge.textContent = hasDL ? `${state.cycles.length} cycle(s)` : 'No cycles';
 }
+
+
+
+
 // ═══════════════════════════════════════════════════════
 //  RAG Canvas
 // ═══════════════════════════════════════════════════════
@@ -1172,25 +1199,40 @@ function drawRAG() {
   const PROC_COLORS = ['#4f8fff','#3dffa0','#ff6b6b','#ffd93d','#c77dff','#ff9f43','#48dbfb','#ff6b9d'];
   const RES_COLORS  = ['#4f8fff','#3dffa0','#ffd93d','#ff6b6b','#c77dff','#ff9f43'];
 
-  // Draw edges
+  // Draw edges — offset alloc and req arrows perpendicularly so they don't overlap
   for (let i = 0; i < np; i++) {
     for (let j = 0; j < nr; j++) {
       const p = procPos[i], r = resPos[j];
       const inDL = deadlocked.has(i);
-      // Allocation edge: R -> P (green/red)
+      const bothWays = (state.alloc[i]?.[j] > 0) && (state.req[i]?.[j] > 0);
+      const OFFSET = 5; // perpendicular pixel shift when both arrows present
+
+      // Allocation edge: R -> P
       if (state.alloc[i] && state.alloc[i][j] > 0) {
-        drawArrow(ctx, r.x - RR, r.y, p.x + PR, p.y, inDL ? '#ff4d6d' : '#3dffa0', 0.8);
-        // label amount
-        const mx = (r.x - RR + p.x + PR) / 2, my = (r.y + p.y) / 2;
+        let x1 = r.x - RR, y1 = r.y, x2 = p.x + PR, y2 = p.y;
+        if (bothWays) {
+          // shift perpendicular to the line direction
+          const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx*dx+dy*dy);
+          const px = -dy/len * OFFSET, py = dx/len * OFFSET;
+          x1+=px; y1+=py; x2+=px; y2+=py;
+        }
+        drawArrow(ctx, x1, y1, x2, y2, inDL ? '#ff4d6d' : '#3dffa0', 0.8);
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
         ctx.save();
         ctx.font = '10px JetBrains Mono';
         ctx.fillStyle = inDL ? '#ff4d6d' : '#3dffa0';
         ctx.fillText(state.alloc[i][j], mx + 4, my - 4);
         ctx.restore();
       }
-      // Request edge: P -> R (blue/red)
+      // Request edge: P -> R
       if (state.req[i] && state.req[i][j] > 0) {
-        drawArrow(ctx, p.x - PR, p.y, r.x + RR, r.y, inDL ? '#ff4d6d88' : '#4f8fff', 0.75);
+        let x1 = p.x - PR, y1 = p.y, x2 = r.x + RR, y2 = r.y;
+        if (bothWays) {
+          const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx*dx+dy*dy);
+          const px = -dy/len * OFFSET, py = dx/len * OFFSET;
+          x1+=px; y1+=py; x2+=px; y2+=py;
+        }
+        drawArrow(ctx, x1, y1, x2, y2, inDL ? '#ff4d6d88' : '#4f8fff', 0.75);
       }
     }
   }
@@ -1322,19 +1364,35 @@ function drawSimRAG() {
   const PC = ['#4f8fff','#3dffa0','#ff6b6b','#ffd93d','#c77dff','#ff9f43','#48dbfb','#ff6b9d'];
   const RC = ['#4f8fff','#3dffa0','#ffd93d','#ff6b6b','#c77dff','#ff9f43'];
 
-  // Edges
+  // Edges — offset when both alloc and req exist on same P-R pair
   for (let i = 0; i < np; i++) {
     for (let j = 0; j < nr; j++) {
       const p = procPos[i], r = resPos[j], inDL = deadlocked.has(i);
+      const bothWays = (state.alloc[i]?.[j] > 0) && (state.req[i]?.[j] > 0);
+      const OFFSET = 4;
+
       if (state.alloc[i]?.[j] > 0) {
-        drawArrow(ctx, r.x-RR, r.y, p.x+PR, p.y, inDL ? '#ff4d6d' : '#3dffa0', 0.82);
-        const mx=(r.x-RR+p.x+PR)/2, my=(r.y+p.y)/2;
+        let x1=r.x-RR, y1=r.y, x2=p.x+PR, y2=p.y;
+        if (bothWays) {
+          const dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy);
+          const px=-dy/len*OFFSET, py=dx/len*OFFSET;
+          x1+=px; y1+=py; x2+=px; y2+=py;
+        }
+        drawArrow(ctx, x1, y1, x2, y2, inDL ? '#ff4d6d' : '#3dffa0', 0.82);
+        const mx=(x1+x2)/2, my=(y1+y2)/2;
         ctx.save(); ctx.font='9px JetBrains Mono';
         ctx.fillStyle = inDL?'#ff4d6d':'#3dffa0';
         ctx.fillText(state.alloc[i][j], mx+3, my-3); ctx.restore();
       }
-      if (state.req[i]?.[j] > 0)
-        drawArrow(ctx, p.x-PR, p.y, r.x+RR, r.y, inDL?'#ff4d6d88':'#4f8fff', 0.76);
+      if (state.req[i]?.[j] > 0) {
+        let x1=p.x-PR, y1=p.y, x2=r.x+RR, y2=r.y;
+        if (bothWays) {
+          const dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy);
+          const px=-dy/len*OFFSET, py=dx/len*OFFSET;
+          x1+=px; y1+=py; x2+=px; y2+=py;
+        }
+        drawArrow(ctx, x1, y1, x2, y2, inDL?'#ff4d6d88':'#4f8fff', 0.76);
+      }
     }
   }
 
@@ -1406,7 +1464,6 @@ function setClass(id, cls) {
 function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-
 </script>
 </body>
 </html>
