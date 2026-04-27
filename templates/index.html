@@ -4,17 +4,657 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Deadlock Detection Toolkit — Group 15</title>
-<link rel="preconnect" href=""/>
-<link href="" rel="stylesheet"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
+/* ── Reset & Vars ─────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+:root {
+  --bg:      #0b0d14;
+  --bg2:     #10131e;
+  --bg3:     #161924;
+  --bg4:     #1e2231;
+  --border:  #252a3d;
+  --accent:  #4f8fff;
+  --accent2: #7b5cff;
+  --danger:  #ff4d6d;
+  --success: #3dffa0;
+  --warn:    #ffc14d;
+  --text:    #dde2f0;
+  --text2:   #6e7a96;
+  --text3:   #9ba6be;
+  --glow:    rgba(79,143,255,.18);
+  --glow-d:  rgba(255,77,109,.18);
+  --glow-s:  rgba(61,255,160,.12);
+  --mono:    'JetBrains Mono', monospace;
+  --sans:    'Space Grotesk', sans-serif;
+  --rad:     10px;
+}
+
+html, body { height: 100%; overflow: hidden; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+
+/* scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Header ───────────────────────────────────────── */
+header {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 56px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  position: relative; z-index: 10;
+}
+.header-logo {
+  display: flex; align-items: center; gap: 12px;
+}
+.header-logo .icon {
+  width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 8px; display: grid; place-items: center; font-size: 14px;
+  box-shadow: 0 0 12px var(--glow);
+}
+.header-logo h1 { font-size: 15px; font-weight: 600; letter-spacing: .3px; }
+.header-logo span { font-family: var(--mono); font-size: 11px; color: var(--text2); }
+.header-meta {
+  display: flex; align-items: center; gap: 20px;
+  font-family: var(--mono); font-size: 11px; color: var(--text2);
+}
+.status-badge {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border-radius: 20px; font-size: 11px; font-family: var(--mono);
+  border: 1px solid var(--border); background: var(--bg3);
+  transition: all .3s;
+}
+.status-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text2); }
+.status-badge.safe { border-color: var(--success); color: var(--success); }
+.status-badge.safe .dot { background: var(--success); box-shadow: 0 0 6px var(--success); animation: pulse 1.4s infinite; }
+.status-badge.danger { border-color: var(--danger); color: var(--danger); }
+.status-badge.danger .dot { background: var(--danger); box-shadow: 0 0 6px var(--danger); animation: pulse .7s infinite; }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Layout ───────────────────────────────────────── */
+.app-layout {
+  flex: 1; display: grid; min-height: 0;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 1fr;
+}
+
+/* ── Sidebar ──────────────────────────────────────── */
+.sidebar {
+  background: var(--bg2); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sidebar-section { padding: 14px 12px 6px; }
+.sidebar-section label {
+  font-family: var(--mono); font-size: 10px; color: var(--text2);
+  text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 8px;
+  padding: 0 6px;
+}
+.nav-btn {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border: none; background: transparent; color: var(--text3);
+  font-family: var(--sans); font-size: 13px; cursor: pointer; border-radius: 7px;
+  transition: all .18s; text-align: left; margin-bottom: 2px;
+}
+.nav-btn .nb-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+.nav-btn:hover { background: var(--bg3); color: var(--text); }
+.nav-btn.active { background: var(--bg4); color: var(--accent); }
+.nav-btn.active .nb-icon { color: var(--accent); }
+
+.sidebar-divider { height: 1px; background: var(--border); margin: 10px 12px; }
+
+.config-box { padding: 12px 14px; }
+.config-box label { font-family: var(--mono); font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 10px; }
+.slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.slider-row span { font-family: var(--mono); font-size: 10px; color: var(--text3); width: 72px; }
+.slider-row .val { width: 24px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+input[type=range] {
+  flex: 1; -webkit-appearance: none; height: 3px; border-radius: 2px;
+  background: var(--bg4); outline: none; cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--accent); cursor: pointer; box-shadow: 0 0 6px var(--glow);
+}
+
+.preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 6px 14px 14px; }
+.preset-btn {
+  padding: 7px 6px; border: 1px solid var(--border); background: var(--bg3);
+  color: var(--text3); font-family: var(--mono); font-size: 10px; border-radius: 6px;
+  cursor: pointer; text-align: center; transition: all .18s; line-height: 1.3;
+}
+.preset-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--bg4); }
+.preset-btn.dl { border-color: rgba(255,77,109,.3); color: var(--danger); }
+.preset-btn.dl:hover { border-color: var(--danger); background: rgba(255,77,109,.08); }
+.preset-btn.ok { border-color: rgba(61,255,160,.3); color: var(--success); }
+.preset-btn.ok:hover { border-color: var(--success); background: rgba(61,255,160,.08); }
+.preset-btn.warn { border-color: rgba(255,193,77,.3); color: var(--warn); }
+.preset-btn.warn:hover { border-color: var(--warn); background: rgba(255,193,77,.08); }
+
+.sidebar-actions { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 5px; margin-top: auto; }
+.action-btn {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg3); color: var(--text3); font-family: var(--sans); font-size: 13px;
+  cursor: pointer; transition: all .18s; display: flex; align-items: center; gap: 8px;
+}
+.action-btn:hover { background: var(--bg4); color: var(--text); border-color: var(--accent); }
+.action-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.action-btn.primary:hover { background: #6ba3ff; }
+
+/* ── Main Content ─────────────────────────────────── */
+.main-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+/* ── Tab Pages ────────────────────────────────────── */
+.tab-page { display: none; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.tab-page.active { display: flex; }
+
+/* Stats row */
+.stats-row {
+  flex-shrink: 0; display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 10px; padding: 14px 16px 10px;
+}
+.stat-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad);
+  padding: 12px 16px; display: flex; flex-direction: column; gap: 2px;
+  transition: border-color .3s;
+}
+.stat-card.alert { border-color: rgba(255,77,109,.4); background: rgba(255,77,109,.04); }
+.stat-card.good  { border-color: rgba(61,255,160,.4); background: rgba(61,255,160,.04); }
+.stat-card .s-val { font-size: 24px; font-weight: 700; font-family: var(--mono); color: var(--accent); }
+.stat-card.alert .s-val { color: var(--danger); }
+.stat-card.good  .s-val { color: var(--success); }
+.stat-card .s-label { font-size: 11px; color: var(--text2); }
+
+/* two-col layout inside pages */
+.two-col { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 16px 14px; min-height: 0; }
+.two-col.three { grid-template-columns: 1.2fr 1fr; }
+.panel {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad);
+  display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+}
+.panel-hdr {
+  flex-shrink: 0; padding: 10px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.panel-hdr h3 { font-size: 13px; font-weight: 600; color: var(--text); }
+.panel-hdr .badge {
+  font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 4px;
+  background: var(--bg3); color: var(--text2);
+}
+.panel-body { flex: 1; overflow: auto; padding: 14px; }
+
+/* RAG Canvas */
+#rag-canvas { width: 100%; flex: 1; display: block; }
+.rag-wrap { flex: 1; display: flex; flex-direction: column; padding: 10px; }
+
+/* Log area */
+.log-area {
+  flex: 1; overflow-y: auto; font-family: var(--mono); font-size: 11px;
+  color: var(--text3); line-height: 1.7; padding: 10px 14px;
+}
+.log-area .l-err  { color: var(--danger); }
+.log-area .l-ok   { color: var(--success); }
+.log-area .l-warn { color: var(--warn); }
+.log-area .l-info { color: var(--accent); }
+.log-area .l-cycle{ color: var(--danger); font-weight: 600; }
+.log-area .l-head { color: var(--accent); font-weight: 600; }
+
+/* Matrix tables */
+.matrix-wrap { overflow: auto; }
+.matrix-label { font-family: var(--mono); font-size: 11px; color: var(--text2); margin-bottom: 8px; }
+table.mx { border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+table.mx th { padding: 4px 10px; color: var(--text2); font-weight: 500; font-size: 10px; border-bottom: 1px solid var(--border); text-align: center; }
+table.mx td { padding: 5px 10px; text-align: center; color: var(--text); border-bottom: 1px solid rgba(37,42,61,.5); }
+table.mx td.proc { color: var(--text2); font-size: 10px; }
+table.mx input {
+  width: 36px; padding: 3px 5px; text-align: center;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); font-family: var(--mono); font-size: 12px; outline: none;
+  transition: border-color .15s;
+}
+table.mx input:focus { border-color: var(--accent); }
+table.mx tr.dl-row td { background: rgba(255,77,109,.06); }
+
+/* Detect page */
+.detect-body { flex: 1; overflow-y: auto; padding: 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.75; color: var(--text3); }
+.detect-result-block { margin-bottom: 16px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg3); }
+.detect-result-block h4 { font-size: 12px; color: var(--accent); margin-bottom: 8px; }
+.detect-result-block .ok  { color: var(--success); }
+.detect-result-block .err { color: var(--danger); font-weight: 600; }
+.cycle-path { background: rgba(255,77,109,.1); border: 1px solid rgba(255,77,109,.3); border-radius: 5px; padding: 4px 10px; margin: 4px 0; color: var(--danger); }
+
+/* Recovery */
+.recover-options { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.recover-btn {
+  padding: 8px 16px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg3); color: var(--text3); font-family: var(--sans); font-size: 12px;
+  cursor: pointer; transition: all .18s;
+}
+.recover-btn:hover { border-color: var(--warn); color: var(--warn); background: rgba(255,193,77,.06); }
+.victim-select {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-family: var(--mono); font-size: 12px; padding: 6px 10px; outline: none;
+}
+
+/* Banker page */
+.banker-avail { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.banker-avail label { font-family: var(--mono); font-size: 11px; color: var(--text2); }
+.banker-avail input {
+  width: 42px; padding: 4px 6px; text-align: center;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 5px;
+  color: var(--text); font-family: var(--mono); font-size: 12px; outline: none;
+}
+.banker-avail input:focus { border-color: var(--accent); }
+.banker-result {
+  padding: 14px; border-radius: 8px; font-family: var(--mono); font-size: 13px;
+  font-weight: 600; text-align: center; border: 1px solid var(--border);
+  background: var(--bg3); color: var(--text2); transition: all .3s;
+}
+.banker-result.safe   { background: rgba(61,255,160,.08); border-color: var(--success); color: var(--success); }
+.banker-result.unsafe { background: rgba(255,77,109,.08); border-color: var(--danger); color: var(--danger); }
+
+/* About page */
+.about-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad);
+  padding: 22px 24px; margin-bottom: 12px;
+}
+.about-card h3 { font-size: 14px; color: var(--accent); margin-bottom: 10px; }
+.about-card p { font-size: 13px; color: var(--text3); line-height: 1.7; }
+.members { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-top: 12px; }
+.member-card {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px; text-align: center;
+}
+.member-card .avatar {
+  width: 40px; height: 40px; border-radius: 50%; margin: 0 auto 10px;
+  display: grid; place-items: center; font-size: 16px;
+  background: linear-gradient(135deg,var(--bg4),var(--border));
+  border: 1px solid var(--border);
+}
+.member-card .roll { font-family: var(--mono); font-size: 10px; color: var(--text2); margin-top: 4px; }
+.member-card .name { font-size: 13px; color: var(--text); font-weight: 500; }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 20px; right: 20px; z-index: 999;
+  padding: 10px 18px; border-radius: 8px; font-size: 13px; font-family: var(--sans);
+  background: var(--bg4); border: 1px solid var(--border); color: var(--text);
+  transform: translateY(20px); opacity: 0; transition: all .3s; pointer-events: none;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.ok  { border-color: var(--success); color: var(--success); }
+.toast.err { border-color: var(--danger); color: var(--danger); }
+
+/* Scrollable areas in panels */
+.scroll-area { flex: 1; overflow-y: auto; }
+
+/* Loading spinner overlay */
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Simulate tab layout ─────────────────────────────── */
+.simulate-layout {
+  flex: 1; display: grid;
+  grid-template-columns: 1fr 1.35fr;
+  gap: 10px;
+  padding: 0 16px 14px;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Left column: stacked matrices */
+.sim-matrices-col {
+  display: flex; flex-direction: column;
+  gap: 10px; min-height: 0; overflow: hidden;
+}
+.sim-matrices-col .panel { flex: 1; min-height: 0; }
+
+/* Right column: live RAG */
+.sim-rag-col {
+  display: flex; flex-direction: column;
+  min-height: 0; overflow: hidden;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--rad);
+}
+.sim-rag-col .rag-wrap { flex: 1; display: flex; flex-direction: column; padding: 8px; min-height: 0; }
+#sim-rag-canvas { width: 100%; flex: 1; display: block; min-height: 0; }
+
+/* Dim-control bar */
+.sim-toolbar {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 16px;
+  padding: 9px 16px 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.dim-ctrl { display: flex; align-items: center; gap: 7px; }
+.dim-ctrl span.label { font-family: var(--mono); font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .8px; }
+.dim-btn {
+  width: 24px; height: 24px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--bg3);
+  color: var(--text); font-size: 15px; font-weight: 700;
+  cursor: pointer; line-height: 1; display: grid; place-items: center;
+  transition: all .15s;
+}
+.dim-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dim-btn:active { transform: scale(.9); }
+.dim-val {
+  font-family: var(--mono); font-size: 14px; font-weight: 700;
+  color: var(--accent); min-width: 16px; text-align: center;
+}
+/* Live-pulse badge on RAG header */
+@keyframes live-pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.live-badge { color: var(--success) !important; animation: live-pulse 2s infinite; }
 </style>
 </head>
 <body>
 
+<!-- Header -->
+<header>
+  <div class="header-logo">
+    <div class="icon">🔒</div>
+    <div>
+      <h1>Deadlock Detection Toolkit</h1>
+      <span>Automated Detection &amp; Recovery System</span>
+    </div>
+  </div>
+  <div class="header-meta">
+    <span>Group 15 &nbsp;|&nbsp; OS CA2</span>
+    <div class="status-badge" id="global-status">
+      <div class="dot"></div>
+      <span id="status-text">Initializing...</span>
+    </div>
+  </div>
+</header>
 
-<script>
+<div class="app-layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <label>Navigation</label>
+      <button class="nav-btn active" onclick="switchTab('dashboard')">
+        <span class="nb-icon">📊</span> Dashboard
+      </button>
+      <button class="nav-btn" onclick="switchTab('simulate')">
+        <span class="nb-icon">⚙️</span> Simulate
+      </button>
+      <button class="nav-btn" onclick="switchTab('detect')">
+        <span class="nb-icon">🔍</span> Detection
+      </button>
+      <button class="nav-btn" onclick="switchTab('recover')">
+        <span class="nb-icon">🛠️</span> Recovery
+      </button>
+      <button class="nav-btn" onclick="switchTab('banker')">
+        <span class="nb-icon">🏦</span> Banker's Algo
+      </button>
+      <button class="nav-btn" onclick="switchTab('about')">
+        <span class="nb-icon">👥</span> About
+      </button>
+    </div>
 
-</script>
+    <div class="sidebar-divider"></div>
+
+    <div class="config-box">
+      <label>Configuration</label>
+      <div class="slider-row">
+        <span>Processes</span>
+        <input type="range" id="proc-slider" min="2" max="8" value="3" oninput="onSliderChange()"/>
+        <span class="val" id="proc-val">3</span>
+      </div>
+      <div class="slider-row">
+        <span>Resources</span>
+        <input type="range" id="res-slider" min="2" max="6" value="3" oninput="onSliderChange()"/>
+        <span class="val" id="res-val">3</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="padding-top:4px">
+      <label>Preset Scenarios</label>
+    </div>
+    <div class="preset-grid">
+      <button class="preset-btn dl" onclick="loadPreset('circular3')">3-Process<br/>Circular</button>
+      <button class="preset-btn dl" onclick="loadPreset('circular2')">2-Process<br/>Circular</button>
+      <button class="preset-btn warn" onclick="loadPreset('partial')">Partial<br/>Deadlock</button>
+      <button class="preset-btn ok" onclick="loadPreset('safe')">Safe<br/>State</button>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="action-btn" onclick="randomize()">🎲 Randomize Data</button>
+      <button class="action-btn primary" onclick="runDetection()">▶ Run Detection</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+
+    <!-- DASHBOARD TAB -->
+    <div class="tab-page active" id="tab-dashboard">
+      <div class="stats-row">
+        <div class="stat-card" id="sc-proc">
+          <div class="s-val" id="sv-proc">—</div>
+          <div class="s-label">Active Processes</div>
+        </div>
+        <div class="stat-card" id="sc-res">
+          <div class="s-val" id="sv-res">—</div>
+          <div class="s-label">Resource Types</div>
+        </div>
+        <div class="stat-card" id="sc-cycles">
+          <div class="s-val" id="sv-cycles">—</div>
+          <div class="s-label">Deadlock Cycles</div>
+        </div>
+        <div class="stat-card" id="sc-state">
+          <div class="s-val" id="sv-state">—</div>
+          <div class="s-label">System State</div>
+        </div>
+      </div>
+
+      <div class="two-col three" style="flex:1; padding-bottom:14px; min-height:0;">
+        <div class="panel">
+          <div class="panel-hdr">
+            <h3>Resource Allocation Graph (RAG)</h3>
+            <span class="badge" id="rag-badge">—</span>
+          </div>
+          <div class="rag-wrap">
+            <canvas id="rag-canvas"></canvas>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hdr"><h3>System Log</h3></div>
+          <div class="log-area scroll-area" id="sys-log"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SIMULATE TAB -->
+    <div class="tab-page" id="tab-simulate">
+
+      <!-- Toolbar: dimension controls + action buttons -->
+      <div class="sim-toolbar">
+        <!-- Processes +/- -->
+        <div class="dim-ctrl">
+          <span class="label">Processes</span>
+          <button class="dim-btn" onclick="adjustDim('proc',-1)">−</button>
+          <span class="dim-val" id="sim-proc-val">3</span>
+          <button class="dim-btn" onclick="adjustDim('proc',+1)">+</button>
+        </div>
+        <div style="width:1px;height:18px;background:var(--border);"></div>
+        <!-- Resources +/- -->
+        <div class="dim-ctrl">
+          <span class="label">Resources</span>
+          <button class="dim-btn" onclick="adjustDim('res',-1)">−</button>
+          <span class="dim-val" id="sim-res-val">3</span>
+          <button class="dim-btn" onclick="adjustDim('res',+1)">+</button>
+        </div>
+        <!-- Actions -->
+        <div style="margin-left:auto;display:flex;gap:8px;">
+          <button class="action-btn primary" onclick="applyAndDetect()">✔ Apply &amp; Detect</button>
+          <button class="action-btn" onclick="randomize()">🎲 Randomize</button>
+        </div>
+      </div>
+
+      <!-- Two-column body: matrices left, live RAG right -->
+      <div class="simulate-layout">
+
+        <!-- LEFT: Allocation stacked above Request -->
+        <div class="sim-matrices-col">
+          <div class="panel">
+            <div class="panel-hdr">
+              <h3>Allocation Matrix</h3>
+              <span class="badge">Resources held by each process</span>
+            </div>
+            <div class="panel-body scroll-area">
+              <div class="matrix-label">Alloc[i][j] = units of Rj held by Pi</div>
+              <div id="alloc-table"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hdr">
+              <h3>Request Matrix</h3>
+              <span class="badge" id="req-sync-badge">Synced with allocation</span>
+            </div>
+            <div class="panel-body scroll-area">
+              <div class="matrix-label">Req[i][j] = units of Rj requested by Pi</div>
+              <div id="req-table"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Live RAG canvas -->
+        <div class="sim-rag-col">
+          <div class="panel-hdr">
+            <h3>Live Resource Allocation Graph</h3>
+            <span class="badge live-badge">● LIVE</span>
+          </div>
+          <div class="rag-wrap">
+            <canvas id="sim-rag-canvas"></canvas>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- DETECT TAB -->
+    <div class="tab-page" id="tab-detect">
+      <div style="padding:14px 16px 8px; flex-shrink:0; display:flex; gap:8px; align-items:center;">
+        <button class="action-btn primary" onclick="runDetection()">▶ Run Detection</button>
+        <button class="action-btn" onclick="switchTab('simulate')">← Edit Matrices</button>
+        <span style="font-family:var(--mono);font-size:11px;color:var(--text2);margin-left:auto" id="detect-running"></span>
+      </div>
+      <div class="two-col" style="flex:1; padding-top:4px;">
+        <div class="panel">
+          <div class="panel-hdr"><h3>Detection Results</h3></div>
+          <div class="detect-body scroll-area" id="detect-results">
+            <div style="color:var(--text2);font-family:var(--mono);font-size:12px">Run detection to see results...</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hdr"><h3>DFS Traversal Trace</h3></div>
+          <div class="detect-body scroll-area" id="dfs-trace">
+            <div style="color:var(--text2);font-family:var(--mono);font-size:12px">Trace will appear here...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECOVERY TAB -->
+    <div class="tab-page" id="tab-recover">
+      <div style="padding:14px 16px 0; flex-shrink:0;">
+        <div style="font-size:13px;color:var(--text3);margin-bottom:14px">
+          Choose a recovery strategy to resolve the detected deadlock. The victim process will be selected automatically from deadlocked processes.
+        </div>
+        <div class="recover-options">
+          <select class="victim-select" id="victim-select">
+            <option value="auto">Auto-select victim</option>
+          </select>
+          <button class="recover-btn" onclick="recover('terminate')">🗑 Terminate Process</button>
+          <button class="recover-btn" onclick="recover('preempt')">⚡ Preempt Resources</button>
+          <button class="recover-btn" onclick="recover('rollback')">↩ Rollback Process</button>
+        </div>
+      </div>
+      <div class="two-col" style="flex:1; padding-top:4px;">
+        <div class="panel">
+          <div class="panel-hdr"><h3>Recovery Log</h3></div>
+          <div class="log-area scroll-area" id="recover-log">
+            <span style="color:var(--text2)">No recovery actions yet. Run detection first, then apply a strategy.</span>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hdr"><h3>State After Recovery</h3></div>
+          <div class="panel-body scroll-area" id="recover-state">
+            <span style="font-family:var(--mono);font-size:12px;color:var(--text2)">State will update after recovery action.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BANKER'S TAB -->
+    <div class="tab-page" id="tab-banker">
+      <div style="padding:14px 16px 0; flex-shrink:0;">
+        <div class="banker-avail" id="banker-avail-row">
+          <label>Available:</label>
+          <!-- populated dynamically -->
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <button class="action-btn primary" onclick="runBanker()">▶ Check Safety</button>
+        </div>
+        <div class="banker-result" id="banker-result">Enter Max Need matrix and click Check Safety</div>
+      </div>
+      <div class="two-col" style="flex:1; padding-top:10px;">
+        <div class="panel">
+          <div class="panel-hdr">
+            <h3>Max Need Matrix</h3>
+            <span class="badge">Max resources each process may request</span>
+          </div>
+          <div class="panel-body scroll-area">
+            <div class="matrix-label">Max[i][j] = max units of Rj that Pi may ever request</div>
+            <div id="max-table"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hdr"><h3>Banker's Trace</h3></div>
+          <div class="detect-body scroll-area" id="banker-trace">
+            <span style="font-family:var(--mono);font-size:12px;color:var(--text2)">Trace will appear here...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ABOUT TAB -->
+    <div class="tab-page" id="tab-about">
+      <div style="padding:20px; overflow-y:auto; flex:1;">
+        <div class="about-card">
+          <h3>Project Overview</h3>
+          <p>This toolkit automatically detects potential deadlocks in system processes by analyzing process dependencies and resource allocation graphs. It identifies circular wait conditions and suggests resolution strategies using DFS cycle detection and the Banker's Algorithm.</p>
+        </div>
+        <div class="about-card">
+          <h3>Group 15 — OS CA2 Project</h3>
+          <div class="members">
+            <div class="member-card"><div class="avatar">👤</div><div class="name">Member 1</div><div class="roll">R3E052B43</div></div>
+            <div class="member-card"><div class="avatar">👤</div><div class="name">Member 2</div><div class="roll">R3E052B44</div></div>
+            <div class="member-card"><div class="avatar">👤</div><div class="name">Member 3</div><div class="roll">R3E052B45</div></div>
+          </div>
+        </div>
+        <div class="about-card">
+          <h3>Algorithms Implemented</h3>
+          <p><strong style="color:var(--accent)">1. DFS Cycle Detection</strong> — Builds a Resource Allocation Graph (RAG) and uses depth-first search to find back-edges which indicate circular waits (deadlocks).</p>
+          <p style="margin-top:8px"><strong style="color:var(--accent)">2. Resource Allocation Matrix Method</strong> — Mark-sweep algorithm: iteratively marks processes that can complete given available resources, unmarked processes are deadlocked.</p>
+          <p style="margin-top:8px"><strong style="color:var(--accent)">3. Banker's Algorithm</strong> — Safety check for resource allocation. Determines if a safe execution sequence exists given current allocation and maximum needs.</p>
+        </div>
+        <div class="about-card">
+          <h3>Technology Stack</h3>
+          <p style="font-family:var(--mono);font-size:12px;color:var(--text3)">
+            Python 3 + Flask (backend API) &nbsp;|&nbsp; HTML5 + CSS3 + Vanilla JS (frontend) &nbsp;|&nbsp; Canvas API (RAG visualization)
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
 </body>
 </html>
