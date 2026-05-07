@@ -191,7 +191,7 @@ def banker():
         "trace": trace,
         "need": need,
         # Mirrors detect endpoint contract so the frontend can unify state.
-        "deadlock_confirmed": not safe,
+        "unsafe_state": not safe,
         "unsafe_procs": unsafe_procs,
     })
 

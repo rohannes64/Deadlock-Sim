@@ -960,8 +960,8 @@ async function runDetection() {
       sysLog(`DEADLOCK DETECTED: ${state.deadlocked.length} deadlocked process(es).`, 'err');
       toast('Deadlock detected!', 'err');
     } else {
-      sysLog('Detection complete. System state: SAFE.', 'ok');
-      toast('System is SAFE', 'ok');
+      sysLog('Detection complete. No deadlock detected.', 'ok');
+      toast('No deadlock detected', 'ok');
     }
 
     if (el) el.innerHTML = '';
@@ -1003,7 +1003,7 @@ function renderDetectResults(data) {
   } else {
     html += '<div class="ok">✓ All processes can complete. No deadlock confirmed.</div>';
     if (data.cycles.length > 0) {
-      html += `<div style="color:var(--success);margin-top:4px;font-size:11px">✓ Despite RAG cycles (multi-instance resources), the matrix method confirms the system is SAFE.</div>`;
+      html += `<div style="color:var(--success);margin-top:4px;font-size:11px">✓ Despite RAG cycles (multi-instance resources), the matrix method confirms the system is currently deadlock-free.</div>`;
     }
   }
   html += '</div>';
@@ -1056,7 +1056,7 @@ async function runBanker() {
   } else {
     const stuck = bankerUnsafe.map(i => 'P' + i).join(', ');
     res.className = 'banker-result unsafe';
-    res.textContent = `⚠ UNSAFE STATE — Cannot find a safe sequence. Processes that may deadlock: ${stuck}. Granting further requests risks deadlock.`;
+    res.textContent = `⚠ UNSAFE STATE — No guaranteed safe execution sequence exists. Future allocations may lead to deadlock.`;
   }
 
   const trace = document.getElementById('banker-trace');
@@ -1142,8 +1142,8 @@ async function recover(strategy) {
     html += `<div style="color:var(--text2);margin-bottom:8px">Available after recovery: <span style="color:var(--success)">${data.avail.join(', ')}</span></div>`;
     html += `<div style="color:var(--text2)">Allocation matrix updated.</div>`;
     if (state.deadlocked.length === 0) {
-      html += '<div style="color:var(--success);margin-top:12px;font-weight:600">✓ Deadlock fully resolved. System is SAFE.</div>';
-      recoverLog('✓ Deadlock resolved. System is now SAFE.', 'l-ok');
+      html += '<div style="color:var(--success);margin-top:12px;font-weight:600">✓ Deadlock fully resolved. System is DEADLOCK-FREE.</div>';
+      recoverLog('✓ Deadlock resolved. System is now DEADLOCK-FREE.', 'l-ok');
     } else {
       html += `<div style="color:var(--danger);margin-top:12px">⚠ ${state.deadlocked.length} process(es) still deadlocked. Run recovery again.</div>`;
       recoverLog(`⚠ ${state.deadlocked.length} cycle(s) remain.`, 'l-err');
@@ -1233,7 +1233,7 @@ function updateStats() {
   setText('sv-res',  state.n_res);
   // Show wait-for cycle count but only alert if there are ALSO deadlocked processes
   setText('sv-cycles', waitForCycleCount);
-  setText('sv-state', hasDL ? 'UNSAFE' : 'SAFE');
+  setText('sv-state', hasDL ? 'DEADLOCKED' : 'DEADLOCK-FREE');
 
   // The cycles stat card turns red only when the matrix method also confirms deadlock
   setClass('sc-cycles', (waitForCycleCount > 0 && hasDL) ? 'stat-card alert' : 'stat-card');
@@ -1242,8 +1242,8 @@ function updateStats() {
   const badge  = document.getElementById('global-status');
   const badgeT = document.getElementById('status-text');
   if (badge && badgeT) {
-    badge.className  = 'status-badge ' + (hasDL ? 'danger' : 'safe');
-    badgeT.textContent = hasDL ? `DEADLOCK — ${state.deadlocked.length} process(es)` : 'SAFE STATE';
+    badge.className  = 'status-badge ' + (hasDL ? 'danger' : 'DEADLOCK-FREE');
+    badgeT.textContent = hasDL ? `DEADLOCK — ${state.deadlocked.length} process(es)` : 'DEADLOCK-FREE';
   }
 
   const ragBadge = document.getElementById('rag-badge');
@@ -1252,9 +1252,9 @@ function updateStats() {
       ragBadge.textContent = `${state.deadlocked.length} deadlocked`;
     } else if (waitForCycleCount > 0) {
       // Cycles in graph but matrix method says no deadlock (multi-instance resources)
-      ragBadge.textContent = `${waitForCycleCount} wait-for cycle(s) — SAFE`;
+      ragBadge.textContent = `${waitForCycleCount} wait-for cycle(s) — DEADLOCK-FREE`;
     } else {
-      ragBadge.textContent = 'No cycles — SAFE';
+      ragBadge.textContent = 'No cycles — DEADLOCK-FREE';
     }
   }
 }
