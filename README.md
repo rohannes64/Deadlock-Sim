@@ -1,7 +1,5 @@
 # Deadlock Detection Toolkit — Group 15
 
-**OS CA2 Project** | R3E052B43, R3E052B44, R3E052B45
-
 A web-based toolkit for detecting, visualizing, and recovering from deadlocks in operating systems.
 
 ## How to Run
